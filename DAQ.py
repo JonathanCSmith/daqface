@@ -421,37 +421,37 @@ class DoAiCallbackTask:
         DAQmxCfgSampClkTiming(self.do_handle, sync_clock, samp_rate, DAQmx_Val_Rising, DAQmx_Val_FiniteSamps,
                               self.total_length)
 
-    def Callback(self, handle, every_n_samples_event_type, n_samples, data_pointer):
+        self.start = time.time()
+
+    def DoCallback(self, handle, every_n_samples_event_type, n_samples, data_pointer):
         self.callback_counter += 1
+        print(self.callback_counter)
         self.data_of_interest = self.analog_data[self.lick_channel][0:(self.samps_per_callback * self.callback_counter)]
-        print(self.data_of_interest.shape)
-        print(self.data_of_interest)
 
         current_pos = self.samps_per_callback * self.callback_counter
         self.response_window = self.data_of_interest[(current_pos - self.response_length):current_pos]
-        print(self.response_window)
 
         if current_pos >= (self.response_start + self.response_length):
             response = self.AnalyseLicks(self.response_window, 2, self.lick_fraction)
+            print(response)
+            print(time.time() - self.start)
             if response:
-                # print('animal licked')
+                print('animal licked')
                 self.last_pos = current_pos
                 DAQmxTaskControl(self.ai_handle, DAQmx_Val_Task_Abort)
                 DAQmxTaskControl(self.do_handle, DAQmx_Val_Task_Abort)
-                # time.sleep(0.05)
-                DAQmxTaskControl(self.ai_handle, DAQmx_Val_Task_Stop)
-                DAQmxTaskControl(self.do_handle, DAQmx_Val_Task_Stop)
-                # self.ClearTasks()
-            elif current_pos == self.trial_length:
-                # print('time is up')
-                self.last_pos = current_pos
-                DAQmxTaskControl(self.ai_handle, DAQmx_Val_Task_Abort)
-                DAQmxTaskControl(self.do_handle, DAQmx_Val_Task_Abort)
-               # time.sleep(0.05)
-                DAQmxTaskControl(self.ai_handle, DAQmx_Val_Task_Stop)
-                DAQmxTaskControl(self.do_handle, DAQmx_Val_Task_Stop)
+                #DAQmxTaskControl(self.ai_handle, DAQmx_Val_Task_Stop)
+                #DAQmxTaskControl(self.do_handle, DAQmx_Val_Task_Stop)
+                self.ClearTasks()
 
-                # self.ClearTasks()
+            elif current_pos == self.trial_length:
+                print('time is up')
+                self.last_pos = current_pos
+                DAQmxTaskControl(self.ai_handle, DAQmx_Val_Task_Abort)
+                DAQmxTaskControl(self.do_handle, DAQmx_Val_Task_Abort)
+                #DAQmxTaskControl(self.ai_handle, DAQmx_Val_Task_Stop)
+                #DAQmxTaskControl(self.do_handle, DAQmx_Val_Task_Stop)
+                self.ClearTasks()
 
 
         # if current_pos > self.response_start:
@@ -466,7 +466,7 @@ class DoAiCallbackTask:
 
     def DoTask(self):
         # Define and register callback function
-        EveryNCallback = DAQmxEveryNSamplesEventCallbackPtr(self.Callback)
+        EveryNCallback = DAQmxEveryNSamplesEventCallbackPtr(self.DoCallback)
         DAQmxRegisterEveryNSamplesEvent(self.ai_handle, DAQmx_Val_Acquired_Into_Buffer, self.samps_per_callback,
                                        0, EveryNCallback, self.data_pointer)
 
@@ -480,6 +480,7 @@ class DoAiCallbackTask:
         try:
             DAQmxReadAnalogF64(self.ai_handle, self.total_length, -1, DAQmx_Val_GroupByChannel, self.analog_data,
                                numpy.uint32(self.ai_channels * self.total_length), byref(self.ai_read), None)
+            print(self.start - time.time())
             print("Reading")
         except:
             print("Reading causes an error")
@@ -497,10 +498,10 @@ class DoAiCallbackTask:
         return percent_responded >= percent_accepted
 
     def ClearTasks(self):
-        # print('clearing tasks')
+        print('clearing tasks')
+        time.sleep(0.05)
         DAQmxStopTask(self.ai_handle)
         DAQmxStopTask(self.do_handle)
-
         DAQmxClearTask(self.ai_handle)
         DAQmxClearTask(self.do_handle)
 
