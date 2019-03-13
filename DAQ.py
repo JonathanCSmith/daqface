@@ -15,8 +15,10 @@ import matplotlib.pyplot as plt
 import time
 import threading
 
-
 # region [DigitalTasks]
+
+# JON
+from Threading.synchronized import synchronized_with_attr
 
 
 class DigitalInput(Task):
@@ -423,6 +425,10 @@ class DoAiCallbackTask:
 
         self.start = time.time()
 
+        # JON
+        self.lock = threading.RLock()
+
+    @synchronized_with_attr("lock")
     def DoCallback(self, handle, every_n_samples_event_type, n_samples, data_pointer):
         self.callback_counter += 1
         print(self.callback_counter)
