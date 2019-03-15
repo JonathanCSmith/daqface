@@ -6,6 +6,8 @@ Created on Tue Dec 15 13:51:48 2015
 """
 
 # region [Import]
+import queue
+
 from PyDAQmx import *
 from PyDAQmx.DAQmxCallBack import *
 from ctypes import *
@@ -473,8 +475,7 @@ class DoAiCallbackTask:
     def DoTask(self):
         # Define and register callback function
         EveryNCallback = DAQmxEveryNSamplesEventCallbackPtr(self.DoCallback)
-        DAQmxRegisterEveryNSamplesEvent(self.ai_handle, DAQmx_Val_Acquired_Into_Buffer, self.samps_per_callback,
-                                       0, EveryNCallback, self.data_pointer)
+        DAQmxRegisterEveryNSamplesEvent(self.ai_handle, DAQmx_Val_Acquired_Into_Buffer, self.samps_per_callback, 0, EveryNCallback, self.data_pointer)
 
         # Start tasks
         DAQmxWriteDigitalU32(self.do_handle, self.samps_per_chan, 0, -1, DAQmx_Val_GroupByChannel, self.write,
@@ -492,6 +493,253 @@ class DoAiCallbackTask:
             print("Reading causes an error")
 
         # self.ClearTasks()
+        return self.analog_data
+
+    def AnalyseLicks(self, lick_data, threshold, percent_accepted):
+        # first binarise the data
+        lick_response = numpy.zeros(self.response_length)
+        lick_response[lick_data > threshold] = 1
+        # then determine percentage responded
+        percent_responded = numpy.sum(lick_response) / len(lick_response)
+        # return whether this is accepted as a response or not
+        return percent_responded >= percent_accepted
+
+    def ClearTasks(self):
+        print('clearing tasks')
+        time.sleep(0.05)
+        DAQmxStopTask(self.ai_handle)
+        DAQmxStopTask(self.do_handle)
+        DAQmxClearTask(self.ai_handle)
+        DAQmxClearTask(self.do_handle)
+
+
+class WorkToDo:
+    def __init__(self, daq, callback, data, from_index, to_index):
+        self.daq = daq
+        self.callback = callback
+        self.data = data
+        self.from_index = from_index
+        self.to_index = to_index
+
+    def do_work(self):
+        # Assign the data to our global store
+        self.daq.assign_data(self.data, self.from_index, self.to_index)
+
+        # Test our latest window
+        self.daq.test_window(self.from_index, self.to_index)
+
+        # Handle outcomes
+        if self.daq.shutting_down:
+            self.daq.ClearTask()
+            self.callback.has_finished = True
+
+        # Increment after so we are correctly indexed
+        self.callback.callback_counter += 1
+        self.callback.current_length += self.callback.samples_per_callback
+        if self.callback.current_length >= self.callback.total_length:
+            self.callback.has_finished = True
+
+
+class CallbackInterceptor:
+    def __init__(self, daq, samples_per_callback, total_length):
+        self.daq = daq
+        self.is_being_deleted = False
+
+        # Callback props
+        self.current_length = 0
+        self.total_length = total_length
+        self.has_finished = False
+        self.callback_counter = 0
+        self.samples_per_callback = samples_per_callback
+
+        # Queue
+        self.q = queue.Queue()
+
+        # TODO: We could queue callbacks instead of locking
+        #self.lock = threading.RLock()
+
+    #@synchronized_with_attr("lock")  # Don't need a lock any more as we just add our work to the queue
+    def DoCallback(self, handle, every_n_samples_event_type, n_samples, data_pointer):
+        # This check allows registered callbacks to resolve without throwing memory errors
+        if self.has_finished or self.daq.shutting_down:
+            return
+
+        # Get the data and put it into our daq object
+        callback_data = get_callbackdata_from_id(data_pointer)
+        from_index = self.callback_counter * self.samples_per_callback
+        to_index = from_index + self.samples_per_callback
+        # self.daq.acquire_data(callback_data, from_index, to_index)
+        data = self.daq.acquire_data(callback_data, from_index, to_index)
+
+        # Queue our work
+        work = WorkToDo(data, from_index, to_index)
+        self.q.put(work)
+
+        # # Test our latest window
+        # self.daq.test_window(from_index, to_index)
+        # if self.daq.shutting_down:
+        #     self.daq.ClearTask()
+        #     self.has_finished = True
+        #
+        # # Increment after so we are correctly indexed
+        # self.callback_counter += 1
+        # self.current_length += self.samples_per_callback
+        # if self.current_length >= self.total_length:
+        #     self.has_finished = True
+
+        return 0
+
+
+class JonTask:
+    def __init__(self, ai_device, ai_channels, do_device, samp_rate, secs, write, sync_clock, samps_per_callback, response_length_secs, response_start_secs, lick_fraction, lick_channel):
+        self.ai_handle = TaskHandle(0)
+        self.do_handle = TaskHandle(1)
+        self.ai_channels = ai_channels
+        self.total_length = numpy.uint64(samp_rate * secs)
+        self.samps_per_callback = samps_per_callback
+        self.response_length = response_length_secs * samp_rate
+        self.response_start = response_start_secs * samp_rate
+        self.lick_fraction = lick_fraction
+        self.response_window = []
+        self.last_pos = 0
+        self.trial_length = samp_rate * secs
+        self.lick_channel = lick_channel
+        self.data_of_interest = numpy.zeros(self.total_length, dtype=numpy.float64)
+
+        # set up data buffers (analog)
+        self.analog_data = numpy.zeros((self.ai_channels, self.total_length), dtype=numpy.float64)
+        self.ai_read = int32()
+        self.samps_per_chan_written = int32()
+
+        # set up data buffers (digital)
+        self.write = Util.binary_to_digital_map(write)
+        self.samps_per_chan = self.write.shape[1]
+        self.write = numpy.sum(self.write, axis=0)
+
+        # data pointer to make callback happy
+        self.data_pointer = create_callbackdata_id(self.analog_data)
+
+        # set up tasks
+        DAQmxCreateTask('', byref(self.ai_handle))
+        DAQmxCreateTask('', byref(self.do_handle))
+
+        DAQmxCreateAIVoltageChan(self.ai_handle, ai_device, '', DAQmx_Val_Diff, -10.0, 10.0, DAQmx_Val_Volts, None)
+        DAQmxCreateDOChan(self.do_handle, do_device, '', DAQmx_Val_ChanForAllLines)
+
+        DAQmxCfgSampClkTiming(self.ai_handle, '', samp_rate, DAQmx_Val_Rising, DAQmx_Val_FiniteSamps, self.total_length)
+        DAQmxCfgSampClkTiming(self.do_handle, sync_clock, samp_rate, DAQmx_Val_Rising, DAQmx_Val_FiniteSamps, self.total_length)
+
+        self.start = time.time()
+        self.shutting_down = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.ClearTask()
+
+    def __del__(self):
+        """ Clear automatically the task to be able to reallocate resources """
+        # Clear the task before deleting the object
+        # If the task as already been manually cleared, nothing is done
+        # This prevent to clear a task that has a Handle attributed to a new task
+        # See this example
+        # a = Task(), ..., a.ClearTask(), b = Task(), del(a)
+        # b has the same taskHandle as a, and deleting a will clear the task of b
+        try:
+            self.ClearTask()
+        except Exception:
+            pass
+
+    def ClearTask(self):
+        if self.ai_handle:
+            try:
+                DAQmxClearTask(self.ai_handle)
+            finally:
+                self.ai_handle.value = 0
+
+        if self.do_handle:
+            try:
+                DAQmxClearTask(self.do_handle)
+            finally:
+                self.do_handle.value = 1
+
+    def __repr__(self):
+        if self.ai_handle and self.do_handle:
+            return "Task number %d and %d" % (self.ai_handle.value, self.do_handle.value)
+        else:
+            return "Invalid or cleared Task"
+
+    def acquire_data(self, callback_data, from_index, to_index):
+        # Grab our data
+        data = numpy.zeros((self.ai_channels, self.samps_per_callback), dtype=float64)  # Buffer
+        DAQmxReadAnalogF64(self.ai_handle, self.samps_per_callback, -1, DAQmx_Val_GroupByChannel, data, byref(self.ai_read), None)
+
+        # In place substitute data
+        # callback_data[0 : self.ai_channels, from_index : to_index] = data
+        return data
+
+    def assign_data(self, data, from_index, to_index):
+        self.analog_data[0: self.ai_channels, from_index: to_index] = data
+
+    def test_window(self, from_index, to_index):
+        # Run our analyse licks function - JON CHANGED BIG TIME
+        mindex = from_index - self.response_length
+        if mindex < 0:
+            mindex = 0
+        data_of_interest = self.analog_data[self.lick_channel][mindex : to_index]
+
+        # Assess the responses using a sliding window over out current data fraction, allowing for a response length upstream
+        below_threshold = data_of_interest > 2  # Parameterize
+        count = numpy.sum(below_threshold)
+        percentage = count / self.response_length
+
+        # Detect signals of a specific shape smaller than the most recent data acquisition. If its larger we can just flat check it
+        # shape = data_of_interest.shape[:-1] + (data_of_interest.shape[-1] - self.response_length + 1, self.response_length)
+        # strides = data_of_interest.strides + (data_of_interest.strides[-1], )
+        # values_in_windows = numpy.lib.stride_tricks.as_strided(data_of_interest, shape=shape, strides=strides)
+        # window_totals = numpy.sum(values_in_windows, axis=1)
+        # window_percentages = window_totals / self.response_length
+        # valid_response_count = numpy.sum(window_percentages >= self.lick_fraction)
+
+        if percentage > self.lick_fraction:
+            self.shutting_down = True
+
+    def DoTask(self):
+        # Define and register callback function
+        callback_interceptor = CallbackInterceptor(self, self.samps_per_callback, self.total_length)
+        EveryNCallback = DAQmxEveryNSamplesEventCallbackPtr(callback_interceptor)
+        DAQmxRegisterEveryNSamplesEvent(self.ai_handle, DAQmx_Val_Acquired_Into_Buffer, self.samps_per_callback, 0, EveryNCallback, self.data_pointer)
+
+        # Define write action
+        DAQmxWriteDigitalU32(self.do_handle, self.samps_per_chan, 0, -1, DAQmx_Val_GroupByChannel, self.write, byref(self.samps_per_chan_written), None)
+
+        # Start tasks
+        DAQmxStartTask(self.do_handle)
+        DAQmxStartTask(self.ai_handle)
+
+        # Wait until we have taken enough samples or we have received a response
+        print("start time: " + str(time.time() - self.start))
+        while not callback_interceptor.has_finished:
+            if callback_interceptor.q.qsize() > 0:
+
+                # Shouldn't happen as we only have one worker thread but just in case
+                try:
+                    work_item = callback_interceptor.q.get()
+                except queue.Empty:
+                    time.sleep(0.01)
+                    continue
+
+                # Process our workload (i.e. dump data into daq analogue input & test)
+                work_item.do_work()
+
+            # Q is empty, wait for a callback to come in
+            else:
+                time.sleep(0.01)
+        print("end time: " + str(time.time() - self.start))
+
+        # self.ClearTasks()
+        callback_interceptor.is_being_deleted = True
         return self.analog_data
 
     def AnalyseLicks(self, lick_data, threshold, percent_accepted):
