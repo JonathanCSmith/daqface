@@ -742,26 +742,8 @@ class JonTask:
         callback_interceptor.is_being_deleted = True
         return self.analog_data
 
-    def AnalyseLicks(self, lick_data, threshold, percent_accepted):
-        # first binarise the data
-        lick_response = numpy.zeros(self.response_length)
-        lick_response[lick_data > threshold] = 1
-        # then determine percentage responded
-        percent_responded = numpy.sum(lick_response) / len(lick_response)
-        # return whether this is accepted as a response or not
-        return percent_responded >= percent_accepted
 
-    def ClearTasks(self):
-        print('clearing tasks')
-        time.sleep(0.05)
-        DAQmxStopTask(self.ai_handle)
-        DAQmxStopTask(self.do_handle)
-        DAQmxClearTask(self.ai_handle)
-        DAQmxClearTask(self.do_handle)
-
-
-
-# TODO TESTING #
+# TODO TESTING
 # region DoAiMultiTaskTest
 # a = DoAiMultiTask('cDAQ1Mod3/ai0', 1, 'cDAQ1Mod1/port0/line0', 1000.0, 1.0, numpy.zeros((2, 1000)),
 #                   '/cDAQ1/ai/SampleClock')
