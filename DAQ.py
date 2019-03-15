@@ -399,7 +399,6 @@ class DoAiCallbackTask:
         self.last_pos = 0
         self.trial_length = samp_rate * secs
         self.lick_channel = lick_channel
-        self.data_of_interest = numpy.zeros(self.total_length, dtype=numpy.float64)
 
         # set up data buffers (analog)
         self.analog_data = numpy.zeros((self.ai_channels, self.total_length), dtype=numpy.float64)
@@ -708,7 +707,7 @@ class JonTask:
     def DoTask(self):
         # Define and register callback function
         callback_interceptor = CallbackInterceptor(self, self.samps_per_callback, self.total_length)
-        EveryNCallback = DAQmxEveryNSamplesEventCallbackPtr(callback_interceptor)
+        EveryNCallback = DAQmxEveryNSamplesEventCallbackPtr(callback_interceptor.DoCallback)
         DAQmxRegisterEveryNSamplesEvent(self.ai_handle, DAQmx_Val_Acquired_Into_Buffer, self.samps_per_callback, 0, EveryNCallback, self.data_pointer)
 
         # Define write action
