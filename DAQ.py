@@ -571,7 +571,7 @@ class CallbackInterceptor:
         data = self.daq.acquire_data(callback_data, from_index, to_index)
 
         # Queue our work
-        work = WorkToDo(data, from_index, to_index)
+        work = WorkToDo(self.daq, self, data, from_index, to_index)
         self.q.put(work)
 
         # # Test our latest window
