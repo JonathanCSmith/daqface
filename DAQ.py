@@ -672,7 +672,7 @@ class JonTask:
     def acquire_data(self, callback_data, from_index, to_index):
         # Grab our data
         data = numpy.zeros((self.ai_channels, self.samps_per_callback), dtype=float64)  # Buffer
-        DAQmxReadAnalogF64(self.ai_handle, self.samps_per_callback, -1, DAQmx_Val_GroupByChannel, data, byref(self.ai_read), None)
+        DAQmxReadAnalogF64(self.ai_handle, self.samps_per_callback, -1, DAQmx_Val_GroupByChannel, data, numpy.uint32(self.ai_channels * self.samps_per_callback), byref(self.ai_read), None)
 
         # In place substitute data
         # callback_data[0 : self.ai_channels, from_index : to_index] = data
