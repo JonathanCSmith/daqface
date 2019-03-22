@@ -512,7 +512,22 @@ class DoAiCallbackTask:
         DAQmxClearTask(self.do_handle)
 
 
-class WorkToDo:
+class Workable:
+    def do_work(self):
+        pass
+
+
+class FinishWork(Workable):
+    def __init__(self, daq, callback):
+        self.daq = daq
+        self.callback = callback
+
+    def do_work(self):
+        self.daq.ClearTask()
+        self.callback.has_finished = True
+
+
+class WorkToDo(Workable):
     def __init__(self, daq, callback, data, from_index, to_index):
         self.daq = daq
         self.callback = callback
@@ -527,16 +542,13 @@ class WorkToDo:
         # Test our latest window
         self.daq.test_window(self.from_index, self.to_index)
 
-        # Handle outcomes
-        if self.daq.shutting_down:
-            self.daq.ClearTask()
-            self.callback.has_finished = True
-
         # Increment after so we are correctly indexed
         self.callback.callback_counter += 1
         self.callback.current_length += self.callback.samples_per_callback
-        if self.callback.current_length >= self.callback.total_length:
-            self.callback.has_finished = True
+
+        # Handle outcomes
+        if self.daq.shutting_down or self.callback.current_length >= self.callback.total_length:
+            self.callback.q.put(FinishWork(self.daq, self.callback))
 
 
 class CallbackInterceptor:
