@@ -580,7 +580,7 @@ class CallbackInterceptor:
         from_index = self.callback_counter * self.samples_per_callback
         to_index = from_index + self.samples_per_callback
         # self.daq.acquire_data(callback_data, from_index, to_index)
-        data = self.daq.acquire_data(callback_data, from_index, to_index)
+        data = self.daq.acquire_data()
 
         # Queue our work
         work = WorkToDo(self.daq, self, data, from_index, to_index)
@@ -637,7 +637,8 @@ class JonTask:
         DAQmxCreateAIVoltageChan(self.ai_handle, ai_device, '', DAQmx_Val_Diff, -10.0, 10.0, DAQmx_Val_Volts, None)
         DAQmxCreateDOChan(self.do_handle, do_device, '', DAQmx_Val_ChanForAllLines)
 
-        DAQmxCfgSampClkTiming(self.ai_handle, '', samp_rate, DAQmx_Val_Rising, DAQmx_Val_FiniteSamps, self.total_length)
+        #DAQmxCfgSampClkTiming(self.ai_handle, '', samp_rate, DAQmx_Val_Rising, DAQmx_Val_FiniteSamps, self.total_length)
+        DAQmxCfgSampClkTiming(self.ai_handle, '', samp_rate, DAQmx_Val_Rising, DAQmx_Val_ContSamps, numpy.uint32(self.ai_channels * self.samps_per_callback))
         DAQmxCfgSampClkTiming(self.do_handle, sync_clock, samp_rate, DAQmx_Val_Rising, DAQmx_Val_FiniteSamps, self.total_length)
 
         self.start = time.time()
@@ -681,10 +682,16 @@ class JonTask:
         else:
             return "Invalid or cleared Task"
 
-    def acquire_data(self, callback_data, from_index, to_index):
+    def acquire_data(self):
         # Grab our data
         data = numpy.zeros((self.ai_channels, self.samps_per_callback), dtype=float64)  # Buffer
         DAQmxReadAnalogF64(self.ai_handle, self.samps_per_callback, -1, DAQmx_Val_GroupByChannel, data, numpy.uint32(self.ai_channels * self.samps_per_callback), byref(self.ai_read), None)
+
+        locs = data == 0
+        count = numpy.sum(locs)
+
+        if count > 0:
+            print("Data had zeros present....")
 
         # In place substitute data
         # callback_data[0 : self.ai_channels, from_index : to_index] = data
