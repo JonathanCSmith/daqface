@@ -544,21 +544,25 @@ class WorkToDo(Workable):
 
         # Increment after so we are correctly indexed
         self.callback.callback_counter += 1
-        self.callback.current_length += self.callback.samples_per_callback
+        print("Callback count: " + str(self.callback.callback_counter))
 
         # Handle outcomes
-        if self.daq.shutting_down or self.callback.current_length >= self.callback.total_length:
+        if self.daq.shutting_down:
+            print("We are ending because we have a successful lick.")
+            self.callback.q.put(FinishWork(self.daq, self.callback))
+
+        if self.callback.callback_counter >= self.callback.max_callbacks:
+            print("We are ending because we have sampled enough.")
             self.callback.q.put(FinishWork(self.daq, self.callback))
 
 
 class CallbackInterceptor:
-    def __init__(self, daq, samples_per_callback, total_length):
+    def __init__(self, daq, samples_per_callback, max_callbacks):
         self.daq = daq
         self.is_being_deleted = False
 
         # Callback props
-        self.current_length = 0
-        self.total_length = total_length
+        self.max_callbacks = max_callbacks
         self.has_finished = False
         self.callback_counter = 0
         self.samples_per_callback = samples_per_callback
@@ -615,7 +619,7 @@ class JonTask:
         self.last_pos = 0
         self.trial_length = samp_rate * secs
         self.lick_channel = lick_channel
-        self.data_of_interest = numpy.zeros(self.total_length, dtype=numpy.float64)
+        # self.data_of_interest = numpy.zeros(self.total_length, dtype=numpy.float64)
 
         # set up data buffers (analog)
         self.analog_data = numpy.zeros((self.ai_channels, self.total_length), dtype=numpy.float64)
@@ -643,6 +647,7 @@ class JonTask:
 
         self.start = time.time()
         self.shutting_down = False
+        self.debug = False
 
     def __enter__(self):
         return self
@@ -720,12 +725,21 @@ class JonTask:
         # window_percentages = window_totals / self.response_length
         # valid_response_count = numpy.sum(window_percentages >= self.lick_fraction)
 
+        if self.debug:
+            self.shutting_down = numpy.random.rand() > 0.95
+            return
+
         if percentage > self.lick_fraction:
+            print("We have a lick!")
             self.shutting_down = True
 
     def DoTask(self):
+        # Calculate the max number of callbacks
+        total_samples = self.total_length
+        number_of_callbacks = total_samples / self.samps_per_callback
+
         # Define and register callback function
-        callback_interceptor = CallbackInterceptor(self, self.samps_per_callback, self.total_length)
+        callback_interceptor = CallbackInterceptor(self, self.samps_per_callback, number_of_callbacks)
         EveryNCallback = DAQmxEveryNSamplesEventCallbackPtr(callback_interceptor.DoCallback)
         DAQmxRegisterEveryNSamplesEvent(self.ai_handle, DAQmx_Val_Acquired_Into_Buffer, self.samps_per_callback, 0, EveryNCallback, self.data_pointer)
 
