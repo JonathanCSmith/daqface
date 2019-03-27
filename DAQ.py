@@ -706,11 +706,11 @@ class JonTask:
         self.analog_data[0: self.ai_channels, from_index: to_index] = data
 
     def test_window(self, from_index, to_index):
-        # Run our analyse licks function - JON CHANGED BIG TIME
-        mindex = from_index - self.response_length
+        # Run our analyse licks function
+        mindex = to_index - self.response_length
         if mindex < 0:
             mindex = 0
-        data_of_interest = self.analog_data[self.lick_channel][mindex : to_index]
+        data_of_interest = self.analog_data[self.lick_channel][mindex: to_index]
 
         # Assess the responses using a sliding window over out current data fraction, allowing for a response length upstream
         below_threshold = data_of_interest > 2  # Parameterize
